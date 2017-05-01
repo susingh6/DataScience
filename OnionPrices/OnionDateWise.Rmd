@@ -1,0 +1,262 @@
+---
+title: "OnionDateWise"
+author: "Sunpreet Singh"
+date: "4/30/2017"
+output: html_document
+---
+
+<h2>Scraping the data</h2>
+
+We'll be scraping the Onion Date Wise market arrival data from NHRDF website. For this two forms are submitted for years 2016 and 2017. The reason why I am using two form submission is to phase the data ingestion in stages as NHRDF is quite slow when a post request is submitted.
+
+```{r}
+# Loading the required libraries 
+library(rvest)
+library(tidyr)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(ggmap)
+library(prophet)
+library(plotly)
+```
+```{r}
+#  The URL to create an html session
+url = 'http://nhrdf.org/en-us/DailyWiseMarketArrivals'
+nhrdf.session =  url %>% html_session()
+nhrdf.form =nhrdf.session %>% html_form()
+```
+Now we have the form.Even though the form gives us options to choose by name, inspecting the html clearly shows that the we need to provide value for each one of the fields. Leaving them blank (for month, year and market) makes it equal to all.
+
+Note: For Onion, crop=1
+
+```{r}
+# Filling the values to submit the form
+
+year = c(2016,2017)
+crop = 1
+month =""
+market =""
+```
+
+We will first scrape the data for year 2016
+
+```{r}
+nhrdf.form.filled.2016 = set_values(nhrdf.form[[1]],
+           'dnn$dnnLANG$selectCulture' = "en-US",
+           'dnn$ctr966$DailyWiseMarketArrivals$Crop' = crop,
+           'dnn$ctr966$DailyWiseMarketArrivals$Year'= year[1],
+           'dnn$ctr966$DailyWiseMarketArrivals$Market' = market,
+           'dnn$ctr966$DailyWiseMarketArrivals$MonthName' = month)
+
+nhrdf.submit.2016 = submit_form(nhrdf.session, nhrdf.form.filled.2016)
+nhrdf.html.out.2016 = read_html(nhrdf.submit.2016)
+
+nhrdf.table.2016 = nhrdf.html.out.2016 %>% 
+    html_node("#dnn_ctr966_DailyWiseMarketArrivals_GridView1")  %>%
+    html_table()
+head(nhrdf.table.2016)
+```
+
+Same thing for year 2017
+```{r}
+nhrdf.form.filled.2017 = set_values(nhrdf.form[[1]],
+           'dnn$dnnLANG$selectCulture' = "en-US",
+           'dnn$ctr966$DailyWiseMarketArrivals$Crop' = crop,
+           'dnn$ctr966$DailyWiseMarketArrivals$Year'= year[2],
+           'dnn$ctr966$DailyWiseMarketArrivals$Market' = market,
+           'dnn$ctr966$DailyWiseMarketArrivals$MonthName' = month)
+
+nhrdf.submit.2017 = submit_form(nhrdf.session, nhrdf.form.filled.2017)
+nhrdf.html.out.2017 = read_html(nhrdf.submit.2017)
+
+nhrdf.table.2017= nhrdf.html.out.2017 %>% 
+    html_node("#dnn_ctr966_DailyWiseMarketArrivals_GridView1")  %>%
+    html_table()
+head(nhrdf.table.2017)
+
+```
+
+Save these two dataframes to CSV files so that we don't have to scrape everytime. This is true for atleast 2016 data.
+
+```{r}
+write.csv(nhrdf.table.2016,"DailyMarket2016.csv")
+write.csv(nhrdf.table.2017,"DailyMarket2017.csv")
+```
+
+We'll now read the csv and combine these two into one single dataframe
+
+```{r}
+# Read the csv files
+df1= read.csv('DailyMarket2016.csv')
+df2 = read.csv('DailyMarket2017.csv')
+
+
+#  Remove the last line for totals as it is inappropriate
+df1 = df1 %>% filter(Market != 'Total')
+df2 = df2%>% filter(Market != 'Total')
+
+df.combine = bind_rows(df1,df2)
+str(df.combine)
+```
+
+After having a look a the structure, it seems that the Column names are quite kludgy and the date and Price columns need to be typecasted and formatted properly
+
+```{r}
+#Drop column X as it is of no use
+df.combine$X = NULL
+
+# New column names
+col = c('Date','Market','Quantity','PriceMin','PriceMax','PriceMod')
+
+colnames(df.combine) = col
+
+# Change the Price to numeric type
+df.combine$PriceMin =as.numeric(df.combine$PriceMin)
+df.combine$PriceMax =as.numeric(df.combine$PriceMax)
+df.combine$PriceMod =as.numeric(df.combine$PriceMod)
+
+# Change the date format
+df.combine$Date = as.Date(df.combine$Date,format ="%d/%b/%Y")
+
+str(df.combine)
+```
+
+The prediction needs to be based on State but we can see that the city and states are stacked together in Market column. Infact the characters within the bracket are state names. We need to seperate this into two columns.
+
+
+```{r}
+# Creating two new columns - City and State
+df.combine = df.combine%>% 
+  mutate(market1=Market) %>% 
+  separate(market1,c('City','State'),sep="\\(")
+
+# Don't need the ending parenthesis
+df.combine$State = df.combine$State%>% str_replace("\\)","")
+df.combine$State = toupper(df.combine$State)
+df.combine= df.combine%>% arrange(City,Date)
+
+# Also, we can drop the market column
+df.combine$Market = NULL
+
+# Check how many states we have
+unique(df.combine$State)
+```
+
+We can see a couple of issues
+
+1. MP is represented twice (MP and M.P.)
+2. We have cities where no state(NA) was mentioned, so R filled those will NULL. 
+
+Resolving issue one
+
+```{r}
+
+# Madhya Pradesh is represented twice (MP & M.P.)
+df.combine$State = df.combine$State%>% str_replace("M.P.","MP")
+unique(df.combine$State)
+```
+
+For second issue we can code a get_state function like below which takes in a city and returns a State
+```{r}
+
+Get_State = function(City){
+  geo_city = geocode(City)
+  State = revgeocode(as.numeric(geo_city),output='more')
+  return(State$administrative_area_level_1)
+}
+
+State = Get_State("AGRA")
+State
+
+
+# For all cities uncomment below lines of code. Keep in mind the output depends on whether the city # names present in dataframe are correct and Google can identify those
+
+# range = length(unique(df.combine$City))
+#for (i in range){
+#State[i] = Get_State(unique(df.combine$City)[i])
+#}
+
+```
+
+However, since the city data is not that accurate, I choose to ignore the NA
+```{r}
+# Dropping NULL
+
+df.combine =df.combine[is.na(df.combine$State)==FALSE,]
+
+unique(df.combine$State)
+```
+
+Finally, we can summarise which state has the highest sales in terms of quantity
+
+```{r}
+# Summarising by State
+df.state =  df.combine %>%  group_by(State) %>% 
+            summarise(Quantity_State =sum(Quantity)) %>%
+            arrange(desc(Quantity_State)) 
+df.state[1,1]
+```
+
+So, Maharashtra is there at top. We can now move forward to predict the data for next 30 days. However, before that we can explore a few more things
+```{r}
+# Cherry Picking top 5 cities for MS
+df.MS_Cities = df.combine %>% group_by(State,City) %>%
+              summarise(Quantity=sum(Quantity)) %>%  filter(State == 'MS') %>%
+                arrange(desc(Quantity))  %>% 
+               head(5)
+MS_City_plot = ggplot(df.MS_Cities) + aes(reorder(City,Quantity),weight =Quantity/1000,fill=City) + geom_bar() + coord_flip()    
+
+ggplotly(MS_City_plot)
+
+```
+```{r}
+# Plotting it on map
+geo =geocode(df.MS_Cities$City)
+
+df.MS_Cities = bind_cols(df.MS_Cities,geo)
+
+map=get_map("India",maptype="watercolor",source="stamen",zoom=5)
+ggmap(map)
+
+ggmap(map) + geom_point(data=df.MS_Cities,aes(lon,lat,size=Quantity,color=City))
+
+
+```
+
+<h2>Predicting Price for next 30 days</h2>
+
+To graph different price types for these 5 cities. The data is presented in wide format,we have to convert it into tall format
+
+```{r}
+df.MS = df.combine %>%          
+        filter(State=='MS',City==df.MS_Cities$City)%>%
+        select(Date,PriceMin,PriceMod,PriceMax,City,State) %>% 
+        gather('PriceType', 'Value',2:4) %>%
+        arrange(City, Date)
+
+Predict= ggplot(df.MS) + aes(Date,Value,color=PriceType) +geom_line() +facet_grid(.~City)
+
+ggplotly(Predict)
+
+```
+
+
+We can predict prices for each city within Maharashta, but that would be a little tedious considering we are only predicting at state level.
+
+To overcome above limitation, we will take mean price on a particular date for all cities of MP. This gives a good estimate for the price of onions in Maharashtra as a whole. Similarly, we can predict price for next 30 days period.
+
+```{r}
+df.Predict = df.combine %>%
+             filter(State=='MS',PriceMod!=0) %>%
+             group_by(Date) %>%
+             summarise(State_Price=round(mean(PriceMod))) %>%
+             arrange(Date)
+colnames(df.Predict) = c('ds','y')
+m= prophet(df.Predict)
+future = make_future_dataframe(m,period=30)
+forecast =predict(m,future)
+ggplotly(plot(m,forecast))
+
+```
+
