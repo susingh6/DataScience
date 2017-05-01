@@ -1,0 +1,2 @@
+In this exercise, I have scraped the onion date wise price data from NHRDF website for year 2016 till present(30/04/2017). 
+Based on this, I find out the state where the production is highest in terms of quantity. Also, I predict the onion prices for next 30 days as a whole for that state.
