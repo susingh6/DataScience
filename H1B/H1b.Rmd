@@ -1,0 +1,416 @@
+---
+title: "H1B Visas"
+author: "Sunpreet Singh"
+date: "5/13/2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# H1B Visas(Framing)
+
+As we have Mr. Donald Trump at the helm now, and he is aiming to curb the immigration policies and challenge the status quo, my curiosity is to figure out what was the situation before he was president and how it is going to pan out in future. 
+
+Primarily, I am looking for below
+
+1. What are those top 10 companies worldwide that got issued the maximum number of H1B visas in 2016?
+2. For these ten companies- what is the overall trend in the last five years? In order words, is there a massive increase/decrease in the number of visa applications granted?
+3. Is India one of those countries which get preferential treatment when it comes to H1B visas?
+4. Is there any misuse concerning salary offered to these H1B employees vis-a-vis the average wage earned by a native American professional?
+5. Predict a future trend.
+
+# H1B Visas(Acquiring the data)
+
+There are a few sites, which seems like ideal place where we can get the required data
+
+1. H1Bpay.com
+This site is great if one wants to find out the average salary range offered by a particular company to a designated H1B employee. It gives a real breakup among cities and the roles offered. 
+Having said that, the data present is already summarised for last five years, and there is not enough information for any given year and how many employees have applied for H1B visas via a particular company. The data doesn't answer enough of our questions. Maybe we can use this site as a side aid for some of the issues that we are trying to answer.
+
+2. H1Bwage.com
+This site presents data in a tabular format with four key columns (Employer, Job Title, Annual Salary, Date). The data seems ideal for our usage, but it is only available till 2013. We are looking to find out top 10 companies for 2016. So, this site has not been updated.
+
+3.H1Bdata.info
+This site is a simple website containing H1B data from 2012 to 2016. The site claims to have 2M H1B applications organized into a single table. The biggest advantage is that we can limit our search based on a particular year, which is great as we don't have to wade through a lot of data to pinpoint the rows we are aiming for. As a result, we will be scraping this website to answer some of our fundamental questions first hopefully.
+
+```{r}
+
+# Loading the libraries
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(jsonlite)
+library(pbapply)
+library(rvest)
+library(tidyr)
+library(urltools)
+library(prophet)
+library(data.table)
+
+```
+
+Searching for the year alone doesn't yield anything, so we have to search based on city and year. Trying for Boston and Year 2016 and inspecting it, we get the following Url
+
+http://h1bdata.info/index.php?em=&job=&city=BOSTON&year=2016
+
+The above apply we need to repeat the above scraping based in each city. However, as you explore the site, you will realize the search form suggests pre-fill options. For instance, typing “B” into the city field will bring up a modal with suggestions.
+
+That means you can use the pre-fill as an efficient way to query the site.
+
+Using Chrome, I can reload and then right click to “Inspect” the page, then navigate to “Network” in the developer panel and finally type in “B” on the page to load the modal.
+
+Exploring the interface board links, you will find a PHP query returning a JSON object. The goal is first to gather all the suggested cities and then use that list to scrape a vast number of pages with H1B data. 
+
+When you explore the previous URL, you will note that it ends in a letter. Searching on letter 'b' will yield below URL
+
+http://h1bdata.info/cities.php?term=b
+
+And in the response below cities
+
+["BOSTON","BELLEVUE","BLOOMINGTON","BALTIMORE","BROOKLYN","BENTONVILLE","BEAVERTON","BOTHELL","BETHESDA","BURLINGTON","BRIDGEWATER","BRONX","BUFFALO","BATON ROUGE","BIRMINGHAM","BOISE","BOULDER","BURBANK","BERKELEY","BOCA RATON","BEDFORD","BERKELEY HEIGHTS","BROOMFIELD","BRENTWOOD","BLOOMFIELD","BASKING RIDGE","BUFFALO GROVE","BROOKLYN PARK","BILLERICA","BRAINTREE","BELMONT","BAKERSFIELD","BREA","BLUE ASH","BLUE BELL","BETHLEHEM","BURLINGAME","BETHPAGE","BOLINGBROOK","BARTLESVILLE","BEVERLY HILLS","BRISBANE","BOWIE","BROOKFIELD","BOXBOROUGH","BENSALEM","BERLIN","BLACKSBURG","BALA CYNWYD","BERKELEY LAKE"]
+
+
+The above implies we can fetch all the city names by using the already supplied vector letters.
+
+```{r}
+letters
+```
+Parsing the JSON object for cities 
+
+```{r}
+cities = paste0('http://h1bdata.info/cities.php?term=',letters)
+cities
+```
+
+The cities object is a vector of 26 links that have to be read by R. Using lapply() or pblapply() along with fromJSON, R will parse each of the JSON objects to create all.cities. The nested result can be unlisted, so the output is a simple string vector. With this code, we will have all pre-fill cities organized into a vector that can be used to construct the actual web pages containing data.
+
+```{r}
+all.cities =unlist(pblapply(cities,fromJSON))
+head(all.cities,10)
+```
+
+Now we have a list of all cities; we can use the above information to get the required data
+
+Some cities like Auburn Hills are two words which must be encoded for URLs. The url_encode() function changes “Auburn Hills” to Auburn%20Hills to validate the address. You pass in the entire vector and url_encode() will work row-wise
+
+```{r}
+all.cities = urltools::url_encode(as.character(all.cities))
+head(all.cities,10)
+
+```
+
+Fetching the required data
+
+```{r}
+all.urls = paste0('http://h1bdata.info/index.php?em=&job=&city=',all.cities,'&year=',2016)
+head(all.urls)
+```
+
+At this point, we have got 1200 URLs which should generate some 1200 tables. The idea is to combine all these 1200 tables into one big data frame. Since the data is massive, it is better to use data.table fo faster processing.
+
+We can write one standard function and then can use the pbapply function to check on the progress
+
+
+```{r}
+
+# Function to fetch data for a prticular city and year 2016
+get_h1b_data = function (link_url) 
+{
+  x = read_html(link_url)
+  x = html_table(x) 
+  y = data.table(x[1])
+    return (y)
+  Sys.sleep(5)
+}
+
+# Pbapply will let us know the current status
+all.h1b = pblapply(all.urls, get_h1b_data)
+
+```
+
+
+It took us close to 1.5 hrs just to get 2016 data. Let save the data in a CSV format so that I don't have to go through the pain of waiting for hours to fetch the data again. 
+
+At this point all.h1b is a list of data tables, one per page. To simplify, convert it into a data frame and store the result in a CSV file.
+
+```{r}
+
+# Create a vector which can traverse the length of all.h1b
+range = length(all.h1b)
+range_vector = 1:range
+
+# Create an empty data frame
+all.h1b.df = data.frame()
+
+# Combine all the data frame together
+for (i in range_vector) {
+x= all.h1b[[i]]
+all.h1b.df = rbind(data.frame(x[[1]]),all.h1b.df)
+}
+
+# Save the data
+write.csv(all.h1b.df,'all-h1b.csv',row.names = FALSE)
+```
+
+Time to get back the data
+
+```{r}
+all.h1b.df = read.csv('all-h1b.csv')
+head(all.h1b.df)
+```
+
+# H1B Visas(Data Cleansing)
+
+Checking the data types for all columns
+
+```{r}
+str(all.h1b.df)
+```
+
+We can see all are factors,whereas most of these columns are not factor types
+
+```{r}
+# Change into relevant types
+all.h1b.df$EMPLOYER = as.character(all.h1b.df$EMPLOYER)
+all.h1b.df$JOB.TITLE = as.character(all.h1b.df$JOB.TITLE)
+all.h1b.df$BASE.SALARY = as.numeric(all.h1b.df$BASE.SALARY)
+all.h1b.df$LOCATION = as.character(all.h1b.df$LOCATION)
+all.h1b.df$SUBMIT.DATE = as.Date(all.h1b.df$SUBMIT.DATE,format='%m/%d/%y')
+all.h1b.df$START.DATE = as.Date(all.h1b.df$START.DATE,format='%m/%d/%y')
+str(all.h1b.df)
+```
+
+The above looks much better now. Checking for any missing values and dropping those rows
+
+```{r}
+all.h1b.df= all.h1b.df[is.na(all.h1b.df$EMPLOYER)==FALSE,]
+all.h1b.df =all.h1b.df[is.na(all.h1b.df$BASE.SALARY)==FALSE,]
+all.h1b.df =all.h1b.df[is.na(all.h1b.df$SUBMIT.DATE)==FALSE,]
+
+# Checking the different values of case status
+unique(all.h1b.df$CASE.STATUS)
+```
+
+
+# H1B Visas(Transform and Explore)
+
+Since we have quite clean data now, let's find out which companies are at the top
+
+```{r}
+# Finding top 10 companies which got maximum H1B visas allocated 
+
+Companies = data.frame(table(all.h1b.df$EMPLOYER,all.h1b.df$CASE.STATUS)) 
+colnames(Companies) = c('Company','Visa.Status', 'Freq')
+
+Top10.h1b.companies = Companies%>% arrange(desc(Freq)) %>% head(10)
+Top10.h1b.companies$Company = as.character(Top10.h1b.companies$Company)
+Top10.h1b.companies$Freq = as.numeric(Top10.h1b.companies$Freq)
+Top10.h1b.companies
+```
+We can see that out of top ten; six are American companies that have subsidiaries in India and remaining four are primarily outsourcing businesses that have their headquarters in India. Let's visualize the same
+
+```{r}
+Visa.Labels = round(Top10.h1b.companies$Freq/sum(Top10.h1b.companies$Freq)*100,1)
+lbls = paste(Top10.h1b.companies$Company,Visa.Labels)
+lbls= paste(lbls, '%',sep = "")
+pie(Top10.h1b.companies$Freq,labels=lbls,col=rainbow(10), main = 'Visas Issued in 2016')
+
+```
+
+Visulaizing the above with bar plots
+
+```{r}
+H1b.plot = ggplot(data=Top10.h1b.companies) + aes(reorder(Company,Freq),weight=Freq,fill=Company) + geom_bar() +   
+           xlab('Companies') + coord_flip() 
+print(H1b.plot)
+
+```
+
+
+Let's find out companies ranking w.r.t. to pay scales in 2016
+
+
+```{r}
+# Finding top companies by salary
+
+Top.h1b.paying.companies = all.h1b.df %>% filter(CASE.STATUS=='CERTIFIED') %>%
+                             group_by(EMPLOYER)  %>%
+                             summarise(AVERAGE.SALARY = mean(BASE.SALARY,na.rm =TRUE))  %>%
+                             arrange(desc(AVERAGE.SALARY))
+
+head(Top.h1b.paying.companies,10)
+
+```
+
+None of the Indian Companies feature in the top 10 list. Let's find out the exact postion for each.
+
+The four Companies we are looking:
+
+1. Infosys Limited
+2. TATA Consultancy Services Limited
+3. IBM India Private Limited
+4. Wipro Limited
+
+
+```{r}
+Infosys.Pay.Rank = as.numeric(which(Top.h1b.paying.companies$EMPLOYER =='INFOSYS LIMITED'))
+Wipro.Pay.Rank =  as.numeric(which(Top.h1b.paying.companies$EMPLOYER =='WIPRO LIMITED'))
+TCS.Pay.Rank = as.numeric(which(Top.h1b.paying.companies$EMPLOYER =='TATA CONSULTANCY SERVICES LIMITED'))
+IBM.Pay.Rank = as.numeric(which(Top.h1b.paying.companies$EMPLOYER =='IBM INDIA PRIVATE LIMITED'))
+
+print(paste("Pay Rank for Infosys, Wipro, TCS and IBM in 2016 based on immigration data:", Infosys.Pay.Rank,',',Wipro.Pay.Rank,',',TCS.Pay.Rank,',',IBM.Pay.Rank))
+```
+
+It's astonishing that none of these top 4 IT giants are even in the top 20K. 
+
+Let us now compare for these four Indian Companies - how many Visas application got rejected in the last year.
+
+```{r}
+Top4.Indian.Companies = Companies %>% filter(Company =='INFOSYS LIMITED' | Company =='WIPRO LIMITED' | Company =='TATA CONSULTANCY SERVICES LIMITED'|Company =='IBM INDIA PRIVATE LIMITED')
+Top4.Indian.Companies$Company = as.character(Top4.Indian.Companies$Company)
+Top4.Indian.Companies
+```
+Plotting the same
+
+```{r}
+Indian.H1b.plot = ggplot(data=Top4.Indian.Companies) + aes(reorder(Company,Freq),weight=Freq,fill=factor(Visa.Status)) + geom_bar(position ="dodge") + xlab('Companies') + coord_flip()
+
+ggplotly(Indian.H1b.plot)
+
+```
+
+We can see the denied, and withdrawn cases are very less as compared to certified.  It is fair to say that Indian outsourcing companies are relatively preferred over others when it comes H1B Visas.
+
+# H1B Visas( Insight)
+
+Let us now figure out trend for these four Indian companies for the last five years
+
+After inspecting on Wipro Limited the URL is coming out as. Note '+' can be replaced with '%20'.
+
+http://h1bdata.info/index.php?em=Wipro+Limited&job=&city=&year=All+Years
+
+Prepre a vector of URLs and fetch the data
+
+
+```{r}
+Indian.Comp.URL = c('http://h1bdata.info/index.php?em=Wipro%20Limited&job=&city=&year=All%20Years',
+                    'http://h1bdata.info/index.php?em=Infosys%20Limited&job=&city=&year=All%20Years',
+                    'http://h1bdata.info/index.php?em=Ibm%20India%20Private%20Limited&job=&city=&year=All%20Years',
+                    'http://h1bdata.info/index.php?em=Tata%20Consultancy%20Services%20Limited&job=&city=&year=All%20Years')
+```
+
+Calling the same function(get_h1b_data)that we build earlier,we can retrieve the data. 
+
+I've already saved the data into four different CSV. Reading the CSV and combining the datasets
+
+```{r}
+Wipro.h1b = read.csv('Wipro-h1b.csv')
+Infosys.h1b = read.csv('Infosys-h1b.csv')
+TCS.h1b = read.csv('TCS-h1b.csv')
+IBM.h1b = read.csv('IBM-h1b.csv')
+
+# We can combine these four dataframe into one
+Companies.combined = bind_rows(Wipro.h1b,Infosys.h1b,TCS.h1b,IBM.h1b) 
+
+Companies.combined = Companies.combined %>% mutate(Date=START.DATE) %>%
+                     separate(Date,c('DAY','MONTH','YEAR1'),sep='/')
+
+Companies.combined = Companies.combined %>% mutate(YEAR = paste0('20',YEAR1))
+
+# Remove the columns which we don't need
+Companies.combined$JOB.TITLE = NULL
+Companies.combined$SUBMIT.DATE = NULL
+Companies.combined$START.DATE = NULL
+Companies.combined$DAY = NULL
+Companies.combined$MONTH = NULL
+Companies.combined$LOCATION = NULL
+Companies.combined$YEAR1 =NULL
+
+# Change the salary type
+Companies.combined$BASE.SALARY = as.numeric(Companies.combined$BASE.SALARY)
+head(Companies.combined)
+```
+
+Analysing the trend for last 5 years
+
+```{r}
+# Let's figure out a few trends in last 5 years
+
+Salary.Last5.years = Companies.combined %>% group_by(EMPLOYER,YEAR) %>%
+                     summarise(AVERAGE.SALARY= mean(BASE.SALARY,na.rm=TRUE))
+#Salary.Last5.years$YEAR = as.factor(Salary.Last5.years$YEAR)
+
+# Letsplot the trend
+
+Salary.Last5.years.plot =ggplot(Salary.Last5.years) + aes(YEAR,AVERAGE.SALARY, group=1) + geom_line(color='blue') +facet_grid(.~EMPLOYER) + theme(text = element_text(size=10),axis.text.x = element_text(angle=90, hjust=1) )
+
+ggplotly(Salary.Last5.years.plot)
+
+
+```
+
+We can see that TCS pays microscopic compared to other Indian IT firms. Also, Wipro trend has varied a lot over the last five years.
+
+Let's figure out the visa trend for last five years.
+
+
+```{r}
+Visa.Last5.years = data.frame(table(Companies.combined$EMPLOYER,Companies.combined$YEAR))
+colnames(Visa.Last5.years)= c('EMPLOYER','YEAR','VISA.ISSUED')
+
+Visa.Last5.years.plot =ggplot(Visa.Last5.years) + aes(YEAR,VISA.ISSUED, group=1) + geom_line(color='blue') +facet_grid(.~EMPLOYER) + theme(text = element_text(size=10),axis.text.x = element_text(angle=90, hjust=1) )
+
+ggplotly(Visa.Last5.years.plot)
+
+```
+
+# H1B Visas(Model)
+
+So, we extracted all the info we required for H1B visas. The trend doesn't seem very promising from the above graph. Let's figure out how it is going to be in future years.
+
+At this stage, we'll combine the data from all four companies and predict as a total for future
+
+```{r}
+Companies.Predict.Combined = bind_rows(Wipro.h1b,Infosys.h1b,TCS.h1b,IBM.h1b)
+
+# Dropping the redundant columns 
+Companies.Predict.Combined$JOB.TITLE = NULL
+Companies.Predict.Combined$SUBMIT.DATE = NULL
+Companies.Predict.Combined$BASE.SALARY = NULL
+Companies.Predict.Combined$LOCATION = NULL
+
+# Add a column of 1s to calculate the total on particular date
+Companies.Predict.Combined$VALUE = 1
+
+# Format the date column
+Companies.Predict.Combined$START.DATE = as.Date(Companies.Predict.Combined$START.DATE,format='%m/%d/%y')
+Companies.Predict.Combined = Companies.Predict.Combined %>% filter(START.DATE < '2017-01-01') %>%
+                             group_by(START.DATE) %>%
+                             summarise(TOTAL.VISAS = sum(VALUE))  %>%
+                             arrange(START.DATE)
+colnames(Companies.Predict.Combined) = c('ds','y')
+m= prophet(Companies.Predict.Combined)
+future = make_future_dataframe(m,period=365)
+forecast =predict(m,future)
+ggplotly(plot(m,forecast))
+
+
+```
+
+We can visualize the trend with hex bins as well to get a better picture
+
+```{r}
+plot = ggplot(forecast) + aes(forecast$ds,forecast$yhat) + geom_hex() +xlab('Year') + ylab('Visas Issued')
+
+ggplotly(plot)
+```
+
+# H1B Summary
+
+I've excluded the 2017 year data before predicting and clearly we can see that it was already in a downtrend. If we compound the fact, the Donald Trump is now President of USA. I think we will see even a further decrease in Visas applications getting approved. Having said that, based on the exercise above we can conclude a few relevant facts.
+
+1. Indian IT Companies have played a significant role in popularising the H1B Visa scheme. In other words, these four companies are few of the biggest beneficiaries.
+2. None of the Indian IT firms features even in the top 20K list when a direct comparison is made on average salary. 
+Note: we only compared 2016 year data, but a similar assumption can be made for previous years.
+3. Companies like TCS are in the lowest bucket when it comes to paying salary onshore.
+4. There is a pervasive downtrend for all the main firms when it comes to procuring H1b visas.
