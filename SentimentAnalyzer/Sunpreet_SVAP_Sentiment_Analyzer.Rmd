@@ -1,0 +1,308 @@
+---
+title: "UK-BankSentiment-Analyzer"
+author: "Sunpreet Singh"
+date: "7/9/2017"
+output: html_document
+---
+
+
+#Sentiment-Analyzer(Framing)
+As I am working for a UK client-Santander Bank, I am interested to know what are people's sentiments towards its services. Also, I would like to compare that feedback against other top 3 Uk banks namely Lloyds Banking Group, HSBC, and Barclays. 
+
+I would like to figure out few of the below
+
+1. Do an overall sentiment analysis across each bank's reviews.
+2. See which word gets most often used by people while posting these reviews.
+3. Try figuring out the combinations of words that are used in conjunction.
+
+
+# Sentiment-Analyzer(Acquiring)
+To fetch the reviews we can look at below places
+
+1. Twitter - Twitter is a great source of real time social networking data. There is an R package called twitteR which can help authenticate the handshake. We would need to have an account with a valid phone number and create a personal app on apps.twitter.com to get going. Having said that, the limit of 144 characters per tweet doesn't give much of customer insight.
+
+2. Facebook - Again a great source, but we will be avoiding this as we are mainly looking for a site like amazon where reviews are posted. 
+
+3. Trustpilot - Although this site is relatively new, but it captures the reviews for all these four banks nicely. This seems like a great starting point
+
+
+
+```{r}
+#Loading the libraries
+library(rvest)
+library(pbapply)
+library(tm)
+library(wordcloud)
+library(stringr)
+library(SnowballC)
+
+Pages = 1:38
+# URLs for web scraping
+Santander_all_urls =paste0('https://www.trustpilot.com/review/www.santander.co.uk?page=',Pages[1:37])
+Lloyds_all_urls = paste0('https://www.trustpilot.com/review/www.clicksafe.lloydstsb.com?page=',Pages[1:10])
+Hsbc_all_urls =paste0('https://www.trustpilot.com/review/www.hsbc.co.uk?page=',Pages[1:38])
+Barclays_all_urls=paste0('https://www.trustpilot.com/review/www.barclays.co.uk?page=',Pages[1:29])
+
+# Function to retrieve the data
+get_data = function(url_input){
+  
+  x= read_html(url_input)
+  y = x %>% html_nodes(".review-body") %>%
+     html_text()
+  return (y)
+  Sys.sleep(5)
+  
+}
+
+```
+
+Get review data for all four banks by invoking get_data 
+```{r eval=FALSE}
+#Santander
+Santander_reviews = pblapply(Santander_all_urls,get_data)
+Santander_reviews =unlist(Santander_reviews)
+Santander_reviews= gsub("[\r\n]", "", Santander_reviews)
+
+
+#Lloyds
+
+Lloyds_reviews = pblapply(Lloyds_all_urls,get_data)
+Lloyds_reviews =unlist(Lloyds_reviews)
+LLyods_reviews = gsub("[\r\n]", "", Lloyds_reviews)
+
+#HSBC
+Hsbc_reviews = pblapply(Hsbc_all_urls,get_data)
+Hsbc_reviews =unlist(Hsbc_reviews)
+Hsbc_reviews = gsub("[\r\n]", "", Hsbc_reviews)
+
+
+#Barclays
+Barclays_reviews=pblapply(Barclays_all_urls,get_data)
+Barclays_reviews=unlist(Barclays_reviews)
+Barclays_reviews = gsub("[\r\n]", "", Barclays_reviews)
+
+
+
+
+```
+
+Now we have everything to start our sentiment analyzer. Saving the above result into text documents.
+
+```{r eval=FALSE}
+Santander_fileConn =file("Santander_Reviews.txt")
+writeLines(Santander_reviews,Santander_fileConn)
+
+Lloyds_fileConn =file("Lloyds_Reviews.txt")
+writeLines(Lloyds_reviews,Lloyds_fileConn)
+
+Hsbc_fileConn =file("Hsbc_Reviews.txt")
+writeLines(Hsbc_reviews,Hsbc_fileConn)
+
+Barclays_fileConn =file("Barclays_Reviews.txt")
+writeLines(Barclays_reviews,Barclays_fileConn)
+
+#Closing file connection
+close.connection(Santander_fileConn)
+close.connection(Lloyds_fileConn)
+close.connection(Hsbc_fileConn)
+close.connection(Barclays_fileConn)
+```
+
+
+Loading the data back again. First we will try only for Santander bank to see what people have reported
+
+```{r}
+
+filelist = c("Santander_Reviews.txt","Lloyds_Reviews.txt","Hsbc_Reviews.txt","Barclays_Reviews.txt")
+
+#Reading the data back
+Santander_reviews =lapply(filelist[1],FUN =readLines)
+Lloyds_reviews =lapply(filelist[2],FUN =readLines)
+Hsbc_reviews =lapply(filelist[3],FUN =readLines)
+Barclays_reviews=lapply(filelist[4],FUN =readLines)
+
+# Loads the psotive and negative wordlist
+positive = scan('Positive.txt',what='character',comment.char = ';')
+negative = scan('Negative.txt',what='character',comment.char = ';')
+
+Santander_reviews[[1]][1:5]
+```
+
+#Sentiment-Analyzer(Refine)
+We can see that the data is not clean. Infact we would like to perform below actions to clean our reviews 
+
+1. Remove punctuation.
+2. Remove numbers
+3. Remove Stopwords
+4. Stripout remaning Whitespaces
+```{r}
+
+# Function to clean the data
+
+clean_data = function (reviews){
+  Bank_reviews =unlist(reviews)
+
+#Convert into lower case
+  Bank_reviews =tolower(Bank_reviews)
+
+# Removing the stop words
+  Bank_reviews=removeWords(Bank_reviews,c(stopwords("english"),"via","will","got","account","bank","banking"))
+
+#Remove the punctuations 
+  Bank_reviews =gsub(pattern = "\\W",replace=" ",Bank_reviews)
+
+
+#Removing Numbers
+ Bank_reviews =gsub(pattern = "\\d",replace=" ",Bank_reviews)
+
+#Remove single letter words
+ Bank_reviews=gsub(pattern ="\\b[A-z]\\b{1}",replace=" ",Bank_reviews)
+
+#Stripping the whitespace
+ Bank_reviews =stripWhitespace(Bank_reviews)
+ 
+ return(Bank_reviews)
+}
+
+
+
+
+```
+
+#Sentiment-Analyzer(Transform)
+Creating a Corpus and TermDocument matrix of review data 
+
+```{r}
+
+# Creating a function for creating a corpus 
+WordCorpus = function(reviews){
+  
+  Bank_reviews_Corpus = Corpus(VectorSource(reviews))
+  
+# Stemming the corpus so that words like bank,banking will be coverted into root word bank
+#  Bank_reviews_Corpus_Copy = Bank_reviews_Corpus
+#  Bank_reviews_Corpus = tm_map(Bank_reviews_Corpus,stemDocument)
+#  Bank_reviews_Corpus = tm_map(Bank_reviews_Corpus,stemCompletion,dictionary=Bank_reviews_Corpus_Copy)
+  
+  return (Bank_reviews_Corpus)
+  
+}
+
+TDM = function(corpus,freq){
+  
+  tdm = TermDocumentMatrix(corpus)
+  tdm.matrix = as.matrix(tdm)
+  
+  Term_frequency = rowSums(tdm.matrix)
+  Term_frequency = subset(Term_frequency, Term_frequency>=freq)
+  return(Term_frequency)
+  
+}
+
+```
+
+#Sentiment-Analyzer(Explore)
+
+Let us figure out what review data we have in store
+
+
+```{r}
+# Cleaning the data
+
+Santander_reviews = clean_data(Santander_reviews)
+Santander_reviews[1:5]
+```
+
+The data has been cleansed now. lets create a WordCloud and TermDocument matrix for santander
+
+```{r}
+Santander_Corpus = WordCorpus(Santander_reviews)
+wordcloud(Santander_Corpus,random.order = FALSE,min.freq = 50,colors = rainbow(7))
+```
+
+Let's see in terms of barplot the frequency of top words
+```{r}
+Santander_term_freq = TDM(Santander_Corpus,150)
+barplot(Santander_term_freq,las=2,col=rainbow(7))
+```
+
+As we can see, the word santander itself feature more than 800 times which is expected as the reviews are about Santander Uk. Let us now do a similar exercise for all other banks
+```{r}
+# Lloyds
+Lloyds_reviews =clean_data(Lloyds_reviews)
+Llyods_Corpus = WordCorpus(Lloyds_reviews)
+wordcloud(Llyods_Corpus,random.order = FALSE,min.freq = 50,colors = rainbow(7))
+```
+
+```{r}
+#HSBC
+Hsbc_reviews =clean_data(Hsbc_reviews)
+Hsbc_Corpus = WordCorpus(Hsbc_reviews)
+wordcloud(Hsbc_Corpus,random.order = FALSE,min.freq = 50,colors = rainbow(7))
+```
+
+```{r}
+#HSBC
+Barclays_reviews =clean_data(Barclays_reviews)
+Barclays_Corpus = WordCorpus(Barclays_reviews)
+wordcloud(Barclays_Corpus,random.order = FALSE,min.freq = 50,colors = rainbow(7))
+```
+
+#Sentiment-Analyzer(Interactive Visualization)
+
+
+The above wordcloud and frequency histogram can also be depicted in an interactive dashboard
+
+I have prepared a similar dashboard under shinyapps and you can check the same at
+
+### Click below link
+
+<b><a href="https://sunpreet.shinyapps.io/uk_banks/">UK Bank Sentiment Analyses</a></b>
+
+Let's us try to do some more interactive visualization for sentiment review 
+
+```{r}
+
+# Fuction for creating review dataframe
+Sentiment_dataframe = function(reviews,name)
+
+{
+  Bank_BOW= str_split(reviews,pattern="\\s+")
+  Bank_review_score= unlist(lapply(Bank_BOW,function(x){sum(!is.na(match(x,positive)))-
+                                                         sum(!is.na(match(x,negative)))}))
+  Bank_review_word_count = unlist(lapply(Bank_BOW,FUN = length))
+  Bank_name = as.factor(toupper(name))
+  Bank_review_df = data.frame(Bank_review_score,Bank_review_word_count,Bank_name)
+  return(Bank_review_df)
+}
+
+
+Banks_reviews =data.frame()
+Banks_reviews = rbind(Sentiment_dataframe(Santander_reviews,"Santander"),Banks_reviews)
+Banks_reviews = rbind(Sentiment_dataframe(Lloyds_reviews,"Lloyds"),Banks_reviews)
+Banks_reviews = rbind(Sentiment_dataframe(Hsbc_reviews,"Hsbc"),Banks_reviews)
+Banks_reviews = rbind(Sentiment_dataframe(Barclays_reviews,"Barclays"),Banks_reviews)
+colnames(Banks_reviews) = c("SCORE","REVIEW_LENGTH","BANK")
+head(Banks_reviews)
+```
+
+```{r}
+library(crosstalk)
+library(d3scatter)
+
+shared_bank <- SharedData$new(Banks_reviews)
+
+bscols(
+  list(
+    filter_checkbox("BANK", "Bank", shared_bank, ~BANK, inline = TRUE),
+    filter_slider("SCORE", "Score", shared_bank, ~SCORE, width = "100%")
+  ),
+  d3scatter(shared_bank,~SCORE,~REVIEW_LENGTH,~BANK, width="100%", height=300)
+)
+
+
+```
+#Sentiment-Analyzer(Communicate)
+
+It is entirely fair to say that there is a lot of negativity for all four banks as the sentiment score is mostly negative. Perhaps it is the   right time for these banks to look into social media and try rectifying few of the issues the customers face on daily bases.
+
